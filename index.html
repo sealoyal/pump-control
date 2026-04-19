@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pump Control</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+       background:#f4f4f9;color:#222;text-align:center;padding:24px 16px 140px}
+  h1{margin:8px 0 4px;font-size:28px}
+  .sub{color:#666;font-size:14px;margin-bottom:24px}
+  .status{font-size:20px;margin:16px 0}
+  .state{font-weight:700}
+  .state.on{color:#2e7d32}
+  .state.off{color:#c62828}
+  .dot{display:inline-block;width:12px;height:12px;border-radius:50%;
+       background:#bbb;margin-right:8px;vertical-align:middle}
+  .dot.connected{background:#2e7d32}
+  .dot.disconnected{background:#c62828}
+  .btn-bar{position:fixed;left:0;right:0;bottom:0;z-index:20;
+           padding:0;background:#f4f4f9}
+  button.big{display:flex;align-items:center;justify-content:center;
+             width:100%;padding:28px 24px;font-size:30px;margin:0;
+             border:none;color:#fff;min-height:88px;cursor:pointer;
+             -webkit-appearance:none;appearance:none;
+             box-shadow:0 -2px 8px rgba(0,0,0,.12)}
+  button.big:disabled{opacity:.5}
+  .connect{background:#1976d2}
+  .on{background:#4CAF50}
+  .off{background:#f44336}
+  .log{max-width:600px;margin:24px auto 0;text-align:left;
+       font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;
+       color:#555;background:#fff;border:1px solid #ddd;border-radius:6px;
+       padding:10px;max-height:160px;overflow:auto}
+</style>
+</head>
+<body>
+  <h1>Pump Control</h1>
+  <div class="sub">Web Bluetooth · Chrome on Android</div>
+
+  <div class="status">
+    <div><span id="connDot" class="dot disconnected"></span><span id="connText">Disconnected</span></div>
+    <div style="margin-top:8px">Pump: <span id="state" class="state off">—</span></div>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <div class="btn-bar" id="btnBar">
+    <button class="big connect" id="btnConnect">Connect</button>
+  </div>
+
+<script>
+const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const CHAR_UUID    = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+
+let device = null;
+let characteristic = null;
+
+const $ = (id) => document.getElementById(id);
+const log = (msg) => {
+  const el = $('log');
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML += `[${t}] ${msg}<br>`;
+  el.scrollTop = el.scrollHeight;
+};
+
+function setConnected(on) {
+  $('connDot').className = 'dot ' + (on ? 'connected' : 'disconnected');
+  $('connText').textContent = on ? 'Connected' : 'Disconnected';
+  renderButtons(on, null);
+}
+
+function setPumpState(on) {
+  const el = $('state');
+  el.textContent = on ? 'ON' : 'OFF';
+  el.className = 'state ' + (on ? 'on' : 'off');
+  renderButtons(true, on);
+}
+
+function renderButtons(connected, pumpOn) {
+  const bar = $('btnBar');
+  if (!connected) {
+    bar.innerHTML = '<button class="big connect" id="btnConnect">Connect</button>';
+    $('btnConnect').onclick = connect;
+    return;
+  }
+  if (pumpOn === true) {
+    bar.innerHTML = '<button class="big off" id="btnOff">Turn OFF</button>';
+    $('btnOff').onclick = () => writeState(false);
+  } else {
+    bar.innerHTML = '<button class="big on" id="btnOn">Turn ON</button>';
+    $('btnOn').onclick = () => writeState(true);
+  }
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth is not supported in this browser. Use Chrome on Android.');
+    return;
+  }
+  try {
+    log('Requesting device…');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }],
+      // Or use: acceptAllDevices: true, optionalServices: [SERVICE_UUID]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    log(`Connecting to ${device.name || '(unnamed)'}…`);
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    characteristic = await service.getCharacteristic(CHAR_UUID);
+
+    // Subscribe to notifications so button presses on the device update the UI
+    await characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', onNotify);
+
+    // Read current state
+    const val = await characteristic.readValue();
+    const on = val.getUint8(0) === 0x01;
+    setConnected(true);
+    setPumpState(on);
+    log('Connected. Pump is ' + (on ? 'ON' : 'OFF') + '.');
+  } catch (err) {
+    log('Error: ' + err.message);
+  }
+}
+
+function onDisconnected() {
+  log('Device disconnected.');
+  setConnected(false);
+  $('state').textContent = '—';
+  $('state').className = 'state off';
+  characteristic = null;
+}
+
+function onNotify(event) {
+  const on = event.target.value.getUint8(0) === 0x01;
+  setPumpState(on);
+  log('State update from device: ' + (on ? 'ON' : 'OFF'));
+}
+
+async function writeState(on) {
+  if (!characteristic) return;
+  try {
+    const byte = Uint8Array.of(on ? 0x01 : 0x00);
+    await characteristic.writeValue(byte);
+    setPumpState(on);
+    log('Wrote: ' + (on ? 'ON' : 'OFF'));
+  } catch (err) {
+    log('Write failed: ' + err.message);
+  }
+}
+
+$('btnConnect').onclick = connect;
+</script>
+</body>
+</html>
